@@ -615,16 +615,32 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 		return "", "", fmt.Errorf("no valid profiles found")
 	}
 
-	// Create a temporary directory and copy profile data to preserve encryption keys
-	tempDir, err := os.MkdirTemp("", "nlm-chrome-*")
-	if err != nil {
-		return "", "", fmt.Errorf("create temp dir: %w", err)
-	}
-	ba.tempDir = tempDir
+	// Determine the user data directory to use
+	// When NLM_USE_ORIGINAL_PROFILE=1, use the original profile directory directly.
+	// This is useful for environments like WSL where cookie encryption keys are tied
+	// to the original profile location and copying them breaks authentication.
+	var userDataDir string
+	useOriginalProfile := os.Getenv("NLM_USE_ORIGINAL_PROFILE") == "1"
 
-	// Copy the profile data
-	if err := ba.copyProfileDataFromPath(selectedProfile.Path); err != nil {
-		return "", "", fmt.Errorf("copy profile: %w", err)
+	if useOriginalProfile {
+		// Use the parent directory of the profile path (e.g., ~/.config/google-chrome)
+		userDataDir = filepath.Dir(selectedProfile.Path)
+		if ba.debug {
+			fmt.Printf("Using original profile directory: %s\n", userDataDir)
+		}
+	} else {
+		// Default behavior: create a temporary directory and copy profile data
+		tempDir, err := os.MkdirTemp("", "nlm-chrome-*")
+		if err != nil {
+			return "", "", fmt.Errorf("create temp dir: %w", err)
+		}
+		ba.tempDir = tempDir
+		userDataDir = tempDir
+
+		// Copy the profile data
+		if err := ba.copyProfileDataFromPath(selectedProfile.Path); err != nil {
+			return "", "", fmt.Errorf("copy profile: %w", err)
+		}
 	}
 
 	var ctx context.Context
@@ -634,7 +650,7 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 	chromeOpts := []chromedp.ExecAllocatorOption{
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
-		chromedp.UserDataDir(ba.tempDir),
+		chromedp.UserDataDir(userDataDir),
 		chromedp.Flag("headless", !ba.debug),
 		chromedp.Flag("window-size", "1280,800"),
 		chromedp.Flag("new-window", true),
@@ -644,6 +660,14 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 
 		// Use the appropriate browser executable for this profile type
 		chromedp.ExecPath(getBrowserPathForProfile(selectedProfile.Browser)),
+	}
+
+	// If using original profile, add the specific profile directory flag
+	if useOriginalProfile {
+		profileName := filepath.Base(selectedProfile.Path)
+		if profileName != "Default" {
+			chromeOpts = append(chromeOpts, chromedp.Flag("profile-directory", profileName))
+		}
 	}
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), chromeOpts...)

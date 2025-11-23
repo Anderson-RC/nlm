@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/tmc/nlm/gen/method"
@@ -13,6 +14,7 @@ import (
 	"github.com/tmc/nlm/internal/batchexecute"
 	"github.com/tmc/nlm/internal/beprotojson"
 	"github.com/tmc/nlm/internal/rpc"
+	"github.com/tmc/nlm/internal/rpc/grpcendpoint"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -170,8 +172,9 @@ func (c *LabsTailwindOrchestrationServiceClient) ListArtifacts(ctx context.Conte
 func (c *LabsTailwindOrchestrationServiceClient) ActOnSources(ctx context.Context, req *notebooklmv1alpha1.ActOnSourcesRequest) (*emptypb.Empty, error) {
 	// Build the RPC call
 	call := rpc.Call{
-		ID:   "yyryJe",
-		Args: method.EncodeActOnSourcesArgs(req),
+		ID:         "yyryJe",
+		Args:       method.EncodeActOnSourcesArgs(req),
+		NotebookID: req.GetProjectId(),
 	}
 
 	// Execute the RPC
@@ -701,26 +704,52 @@ func (c *LabsTailwindOrchestrationServiceClient) GenerateDocumentGuides(ctx cont
 }
 
 // GenerateFreeFormStreamed calls the GenerateFreeFormStreamed RPC method.
+// Uses the gRPC-style endpoint instead of batchexecute for chat functionality.
 func (c *LabsTailwindOrchestrationServiceClient) GenerateFreeFormStreamed(ctx context.Context, req *notebooklmv1alpha1.GenerateFreeFormStreamedRequest) (*notebooklmv1alpha1.GenerateFreeFormStreamedResponse, error) {
-	// Build the RPC call
-	call := rpc.Call{
-		ID:   "BD",
-		Args: method.EncodeGenerateFreeFormStreamedArgs(req),
+	// Create gRPC endpoint client using the same auth credentials
+	grpcClient := grpcendpoint.NewClient(c.rpcClient.Config.AuthToken, c.rpcClient.Config.Cookies)
+
+	// Build the request body using the browser-compatible format
+	requestBody := grpcendpoint.BuildChatRequest(req.GetSourceIds(), req.GetPrompt())
+
+	// Create the gRPC request
+	grpcReq := grpcendpoint.Request{
+		Endpoint: "/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed",
+		Body:     requestBody,
 	}
 
-	// Execute the RPC
-	resp, err := c.rpcClient.Do(call)
+	// Execute the gRPC request
+	resp, err := grpcClient.Execute(grpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("GenerateFreeFormStreamed: %w", err)
 	}
 
-	// Decode the response
-	var result notebooklmv1alpha1.GenerateFreeFormStreamedResponse
-	if err := beprotojson.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("GenerateFreeFormStreamed: unmarshal response: %w", err)
+	// Parse the response manually - format is: [["text", null, [...], ...]]
+	// The first element of the inner array is the text response
+	var outerArray []interface{}
+	if err := json.Unmarshal(resp, &outerArray); err != nil {
+		return nil, fmt.Errorf("GenerateFreeFormStreamed: parse response: %w", err)
 	}
 
-	return &result, nil
+	if len(outerArray) == 0 {
+		return nil, fmt.Errorf("GenerateFreeFormStreamed: empty response")
+	}
+
+	// Extract the text from the first element
+	innerArray, ok := outerArray[0].([]interface{})
+	if !ok || len(innerArray) == 0 {
+		return nil, fmt.Errorf("GenerateFreeFormStreamed: invalid response format")
+	}
+
+	text, ok := innerArray[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("GenerateFreeFormStreamed: text not found in response")
+	}
+
+	return &notebooklmv1alpha1.GenerateFreeFormStreamedResponse{
+		Chunk:   text,
+		IsFinal: true,
+	}, nil
 }
 
 // GenerateNotebookGuide calls the GenerateNotebookGuide RPC method.

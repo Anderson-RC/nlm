@@ -2,39 +2,35 @@ package method
 
 import (
 	notebooklmv1alpha1 "github.com/tmc/nlm/gen/notebooklm/v1alpha1"
-	"github.com/tmc/nlm/internal/rpc/argbuilder"
 )
 
 // GENERATION_BEHAVIOR: append
 
 // EncodeGenerateFreeFormStreamedArgs encodes arguments for LabsTailwindOrchestrationService.GenerateFreeFormStreamed
 // RPC ID: BD
-// Argument format: [[%all_sources%], %prompt%, null, [2]] when sources present
-// Fallback format: [%project_id%, %prompt%] when no sources
+// Updated format based on browser API calls pattern (November 2025)
+// Format similar to ActOnSources: [[[source_ids]],prompt,null,null,null,null,null,[2,null,[1]]]
 func EncodeGenerateFreeFormStreamedArgs(req *notebooklmv1alpha1.GenerateFreeFormStreamedRequest) []interface{} {
-	// If sources are provided, use the gRPC format with sources
-	if len(req.SourceIds) > 0 {
-		// Build source array
-		sourceArray := make([]interface{}, len(req.SourceIds))
-		for i, sourceId := range req.SourceIds {
-			sourceArray[i] = []interface{}{sourceId}
-		}
+	// Build source IDs array with 2 levels of nesting
+	// Final format in f.req: [[[source_id]]] (3 levels after JSON serialization adds 1)
+	var sourceIDsInner []interface{}
+	for _, sid := range req.GetSourceIds() {
+		sourceIDsInner = append(sourceIDsInner, sid)
+	}
+	// Wrap 1 time: [[sid]]
+	sourceIDsNested := []interface{}{sourceIDsInner}
 
-		// Use gRPC format: [[%all_sources%], %prompt%, null, [2]]
-		return []interface{}{
-			[]interface{}{sourceArray},
-			req.Prompt,
-			nil,
-			[]interface{}{2},
-		}
+	// Build the full argument array
+	args := []interface{}{
+		sourceIDsNested,  // Position 0: [[source_ids]]
+		req.GetPrompt(),  // Position 1: prompt text
+		nil,              // Position 2
+		nil,              // Position 3
+		nil,              // Position 4
+		nil,              // Position 5
+		nil,              // Position 6
+		[]interface{}{2, nil, []interface{}{1}}, // Position 7: metadata
 	}
 
-	// Fallback to old format without sources
-	args, err := argbuilder.EncodeRPCArgs(req, "[%project_id%, %prompt%]")
-	if err != nil {
-		// Log error and return empty args as fallback
-		// In production, this should be handled better
-		return []interface{}{}
-	}
 	return args
 }
