@@ -47,7 +47,7 @@ type ChatSession struct {
 
 // ChatMessage represents a single message in the conversation
 type ChatMessage struct {
-	Role      string    `json:"role"`      // "user" or "assistant"
+	Role      string    `json:"role"` // "user" or "assistant"
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -1023,13 +1023,31 @@ func listNotes(c *api.Client, notebookID string) error {
 		return fmt.Errorf("list notes: %w", err)
 	}
 
+	if len(notes) == 0 {
+		fmt.Println("No notes found in this notebook.")
+		return nil
+	}
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
 	fmt.Fprintln(w, "ID\tTITLE\tLAST MODIFIED")
 	for _, note := range notes {
+		lastModified := "unknown"
+		if meta := note.GetMetadata(); meta != nil && meta.LastModifiedTime != nil {
+			lastModified = meta.LastModifiedTime.AsTime().Format(time.RFC3339)
+		}
+		// Extract the actual note ID from the SourceId wrapper
+		noteID := note.GetSourceId().GetSourceId()
+		if noteID == "" {
+			noteID = note.GetSourceId().String()
+		}
+		title := note.Title
+		if title == "" {
+			title = "(untitled)"
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n",
-			note.GetSourceId(),
-			note.Title,
-			note.GetMetadata().LastModifiedTime.AsTime().Format(time.RFC3339),
+			noteID,
+			title,
+			lastModified,
 		)
 	}
 	return w.Flush()

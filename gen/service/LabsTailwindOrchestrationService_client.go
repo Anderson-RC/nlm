@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/tmc/nlm/gen/method"
@@ -14,6 +15,7 @@ import (
 	"github.com/tmc/nlm/internal/beprotojson"
 	"github.com/tmc/nlm/internal/rpc"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // LabsTailwindOrchestrationServiceClient is a generated client for the LabsTailwindOrchestrationService service.
@@ -479,13 +481,75 @@ func (c *LabsTailwindOrchestrationServiceClient) GetNotes(ctx context.Context, r
 		return nil, fmt.Errorf("GetNotes: %w", err)
 	}
 
-	// Decode the response
-	var result notebooklmv1alpha1.GetNotesResponse
-	if err := beprotojson.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("GetNotes: unmarshal response: %w", err)
+	// Custom parsing for the GetNotes response
+	// The API returns: [[[noteID, [noteID, content, [type, id, [seconds, nanos]], null, title]], ...], ...]
+	var rawData []interface{}
+	if err := json.Unmarshal(resp, &rawData); err != nil {
+		return nil, fmt.Errorf("GetNotes: parse JSON: %w", err)
 	}
 
-	return &result, nil
+	result := &notebooklmv1alpha1.GetNotesResponse{
+		Notes: make([]*notebooklmv1alpha1.Source, 0),
+	}
+
+	// First element is the notes array
+	if len(rawData) == 0 {
+		return result, nil
+	}
+
+	notesArray, ok := rawData[0].([]interface{})
+	if !ok {
+		// Try standard beprotojson unmarshal as fallback
+		if err := beprotojson.Unmarshal(resp, result); err != nil {
+			return nil, fmt.Errorf("GetNotes: unmarshal response: %w", err)
+		}
+		return result, nil
+	}
+
+	for _, noteEntry := range notesArray {
+		noteArr, ok := noteEntry.([]interface{})
+		if !ok || len(noteArr) < 2 {
+			continue
+		}
+
+		note := &notebooklmv1alpha1.Source{}
+
+		// Position 0: Source ID
+		if sourceID, ok := noteArr[0].(string); ok {
+			note.SourceId = &notebooklmv1alpha1.SourceId{
+				SourceId: sourceID,
+			}
+		}
+
+		// Position 1: Details array [id, content, metadata, null, title]
+		if detailsArr, ok := noteArr[1].([]interface{}); ok && len(detailsArr) >= 5 {
+			// Position 4 is the title
+			if title, ok := detailsArr[4].(string); ok {
+				note.Title = title
+			}
+
+			// Position 2 is metadata: [type, id, [seconds, nanos]]
+			if metaArr, ok := detailsArr[2].([]interface{}); ok && len(metaArr) >= 3 {
+				note.Metadata = &notebooklmv1alpha1.SourceMetadata{}
+
+				// Position 2 in metaArr is timestamp: [seconds, nanos]
+				if tsArr, ok := metaArr[2].([]interface{}); ok && len(tsArr) >= 2 {
+					if seconds, ok := tsArr[0].(float64); ok {
+						if nanos, ok := tsArr[1].(float64); ok {
+							note.Metadata.LastModifiedTime = &timestamppb.Timestamp{
+								Seconds: int64(seconds),
+								Nanos:   int32(nanos),
+							}
+						}
+					}
+				}
+			}
+		}
+
+		result.Notes = append(result.Notes, note)
+	}
+
+	return result, nil
 }
 
 // MutateNote calls the MutateNote RPC method.
