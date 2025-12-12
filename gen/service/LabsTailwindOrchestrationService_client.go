@@ -481,8 +481,27 @@ func (c *LabsTailwindOrchestrationServiceClient) GetNotes(ctx context.Context, r
 		return nil, fmt.Errorf("GetNotes: %w", err)
 	}
 
-	// Custom parsing for the GetNotes response
-	// The API returns: [[[noteID, [noteID, content, [type, id, [seconds, nanos]], null, title]], ...], ...]
+	// Parse the GetNotes response using the documented structure.
+	// See notes_response.pb.go for the expected message types.
+	//
+	// API Response Structure:
+	// [
+	//   [                                    <- notes array (position 0)
+	//     [                                  <- NoteEntry
+	//       "note-uuid",                     <- position 0: source_id
+	//       [                                <- position 1: NoteDetails
+	//         "note-uuid",                   <- details[0]: id (duplicate)
+	//         "content text...",             <- details[1]: content
+	//         [type, "id", [sec, nanos]],    <- details[2]: NoteTimestampMetadata
+	//         null,                          <- details[3]: reserved
+	//         "Note Title"                   <- details[4]: title
+	//       ]
+	//     ],
+	//     ...
+	//   ],
+	//   [additional-metadata]               <- ignored
+	// ]
+
 	var rawData []interface{}
 	if err := json.Unmarshal(resp, &rawData); err != nil {
 		return nil, fmt.Errorf("GetNotes: parse JSON: %w", err)
@@ -507,49 +526,66 @@ func (c *LabsTailwindOrchestrationServiceClient) GetNotes(ctx context.Context, r
 	}
 
 	for _, noteEntry := range notesArray {
-		noteArr, ok := noteEntry.([]interface{})
-		if !ok || len(noteArr) < 2 {
-			continue
+		note := parseNoteEntry(noteEntry)
+		if note != nil {
+			result.Notes = append(result.Notes, note)
 		}
+	}
 
-		note := &notebooklmv1alpha1.Source{}
+	return result, nil
+}
 
-		// Position 0: Source ID
-		if sourceID, ok := noteArr[0].(string); ok {
-			note.SourceId = &notebooklmv1alpha1.SourceId{
-				SourceId: sourceID,
-			}
+// parseNoteEntry parses a single note entry from the API response.
+// This matches the structure documented in notes_response.pb.go.
+func parseNoteEntry(entry interface{}) *notebooklmv1alpha1.Source {
+	noteArr, ok := entry.([]interface{})
+	if !ok || len(noteArr) < 2 {
+		return nil
+	}
+
+	note := &notebooklmv1alpha1.Source{}
+
+	// Position 0: Source ID
+	if sourceID, ok := noteArr[0].(string); ok {
+		note.SourceId = &notebooklmv1alpha1.SourceId{
+			SourceId: sourceID,
 		}
+	}
 
-		// Position 1: Details array [id, content, metadata, null, title]
-		if detailsArr, ok := noteArr[1].([]interface{}); ok && len(detailsArr) >= 5 {
-			// Position 4 is the title
-			if title, ok := detailsArr[4].(string); ok {
-				note.Title = title
-			}
+	// Position 1: Details array [id, content, metadata, null, title]
+	detailsArr, ok := noteArr[1].([]interface{})
+	if !ok || len(detailsArr) < 5 {
+		return note
+	}
 
-			// Position 2 is metadata: [type, id, [seconds, nanos]]
-			if metaArr, ok := detailsArr[2].([]interface{}); ok && len(metaArr) >= 3 {
-				note.Metadata = &notebooklmv1alpha1.SourceMetadata{}
+	// details[1]: Content (the note body text)
+	if content, ok := detailsArr[1].(string); ok {
+		note.Content = content
+	}
 
-				// Position 2 in metaArr is timestamp: [seconds, nanos]
-				if tsArr, ok := metaArr[2].([]interface{}); ok && len(tsArr) >= 2 {
-					if seconds, ok := tsArr[0].(float64); ok {
-						if nanos, ok := tsArr[1].(float64); ok {
-							note.Metadata.LastModifiedTime = &timestamppb.Timestamp{
-								Seconds: int64(seconds),
-								Nanos:   int32(nanos),
-							}
-						}
+	// details[4]: Title
+	if title, ok := detailsArr[4].(string); ok {
+		note.Title = title
+	}
+
+	// details[2]: Metadata [type, id, [seconds, nanos]]
+	if metaArr, ok := detailsArr[2].([]interface{}); ok && len(metaArr) >= 3 {
+		note.Metadata = &notebooklmv1alpha1.SourceMetadata{}
+
+		// Position 2 in metaArr is timestamp: [seconds, nanos]
+		if tsArr, ok := metaArr[2].([]interface{}); ok && len(tsArr) >= 2 {
+			if seconds, ok := tsArr[0].(float64); ok {
+				if nanos, ok := tsArr[1].(float64); ok {
+					note.Metadata.LastModifiedTime = &timestamppb.Timestamp{
+						Seconds: int64(seconds),
+						Nanos:   int32(nanos),
 					}
 				}
 			}
 		}
-
-		result.Notes = append(result.Notes, note)
 	}
 
-	return result, nil
+	return note
 }
 
 // MutateNote calls the MutateNote RPC method.
