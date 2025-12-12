@@ -463,6 +463,7 @@ type Source struct {
 	Metadata *SourceMetadata          `protobuf:"bytes,3,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	Settings *SourceSettings          `protobuf:"bytes,4,opt,name=settings,proto3" json:"settings,omitempty"`
 	Warnings []*wrapperspb.Int32Value `protobuf:"bytes,5,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	Content  string                   `protobuf:"bytes,6,opt,name=content,proto3" json:"content,omitempty"`
 }
 
 func (x *Source) Reset() {

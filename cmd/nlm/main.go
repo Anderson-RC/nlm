@@ -35,6 +35,7 @@ var (
 	chunkedResponse   bool // Control rt=c parameter for chunked vs JSON array response
 	useDirectRPC      bool // Use direct RPC calls instead of orchestration service
 	skipSources       bool // Skip fetching sources for chat (useful when project is inaccessible)
+	full              bool // Display full content (for notes, etc)
 )
 
 // ChatSession represents a persistent chat conversation
@@ -64,6 +65,7 @@ func init() {
 	flag.StringVar(&authToken, "auth", os.Getenv("NLM_AUTH_TOKEN"), "auth token (or set NLM_AUTH_TOKEN)")
 	flag.StringVar(&cookies, "cookies", os.Getenv("NLM_COOKIES"), "cookies for authentication (or set NLM_COOKIES)")
 	flag.StringVar(&mimeType, "mime", "", "specify MIME type for content (e.g. 'text/xml', 'application/json')")
+	flag.BoolVar(&full, "full", false, "display full content")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: nlm <command> [arguments]\n\n")
@@ -84,7 +86,10 @@ func init() {
 		fmt.Fprintf(os.Stderr, "  discover-sources <id> <query>  Discover relevant sources\n\n")
 
 		fmt.Fprintf(os.Stderr, "Note Commands:\n")
-		fmt.Fprintf(os.Stderr, "  notes <id>        List notes in notebook\n")
+		fmt.Fprintf(os.Stderr, "  notes <notebook-id> [--full]\n")
+		fmt.Fprintf(os.Stderr, "        List notes in notebook (use --full for content)\n")
+		fmt.Fprintf(os.Stderr, "  read-note <notebook-id> <note-id>\n")
+		fmt.Fprintf(os.Stderr, "        Display content of a specific note\n")
 		fmt.Fprintf(os.Stderr, "  new-note <id> <title>  Create new note\n")
 		fmt.Fprintf(os.Stderr, "  update-note <id> <note-id> <content> <title>  Edit note\n")
 		fmt.Fprintf(os.Stderr, "  rm-note <note-id>  Remove note\n\n")
@@ -397,8 +402,14 @@ func validateArgs(cmd string, args []string) error {
 			return fmt.Errorf("invalid arguments")
 		}
 	case "notes":
-		if len(args) != 1 {
-			fmt.Fprintf(os.Stderr, "usage: nlm notes <notebook-id>\n")
+		// Allow 1 arg (notebook-id) or 2 args (notebook-id + --full flag)
+		if len(args) < 1 || len(args) > 2 {
+			fmt.Fprintf(os.Stderr, "usage: nlm notes <notebook-id> [--full]\n")
+			return fmt.Errorf("invalid arguments")
+		}
+	case "read-note":
+		if len(args) != 2 {
+			fmt.Fprintf(os.Stderr, "usage: nlm read-note <notebook-id> <note-id>\n")
 			return fmt.Errorf("invalid arguments")
 		}
 	case "feedback":
@@ -416,7 +427,7 @@ func isValidCommand(cmd string) bool {
 		"help", "-h", "--help",
 		"list", "ls", "create", "rm", "analytics", "list-featured",
 		"sources", "add", "rm-source", "rename-source", "refresh-source", "check-source", "discover-sources",
-		"notes", "new-note", "update-note", "rm-note",
+		"notes", "read-note", "new-note", "update-note", "rm-note",
 		"audio-create", "audio-get", "audio-rm", "audio-share", "audio-list", "audio-download", "video-create", "video-list", "video-download",
 		"create-artifact", "get-artifact", "list-artifacts", "artifacts", "rename-artifact", "delete-artifact",
 		"generate-guide", "generate-outline", "generate-section", "generate-magic", "generate-mindmap", "generate-chat", "chat", "chat-list",
@@ -702,7 +713,25 @@ func runCmd(client *api.Client, cmd string, args ...string) error {
 
 	// Note operations
 	case "notes":
-		err = listNotes(client, args[0])
+		// Handle --full flag if passed as argument
+		showFull := full
+		cleanArgs := []string{}
+		for _, arg := range args {
+			if arg == "--full" || arg == "-full" {
+				showFull = true
+			} else {
+				cleanArgs = append(cleanArgs, arg)
+			}
+		}
+
+		if len(cleanArgs) != 1 {
+			fmt.Fprintf(os.Stderr, "usage: nlm notes <notebook-id> [--full]\n")
+			return fmt.Errorf("invalid arguments")
+		}
+
+		err = listNotes(client, cleanArgs[0], showFull)
+	case "read-note":
+		err = readNote(client, args[0], args[1])
 	case "new-note":
 		err = createNote(client, args[0], args[1])
 	case "update-note":
@@ -1017,7 +1046,7 @@ func removeNote(c *api.Client, notebookID, noteID string) error {
 }
 
 // Note operations
-func listNotes(c *api.Client, notebookID string) error {
+func listNotes(c *api.Client, notebookID string, showFull bool) error {
 	notes, err := c.GetNotes(notebookID)
 	if err != nil {
 		return fmt.Errorf("list notes: %w", err)
@@ -1025,6 +1054,22 @@ func listNotes(c *api.Client, notebookID string) error {
 
 	if len(notes) == 0 {
 		fmt.Println("No notes found in this notebook.")
+		return nil
+	}
+
+	if showFull {
+		for _, note := range notes {
+			currentID := note.GetSourceId().GetSourceId()
+			if currentID == "" {
+				currentID = note.GetSourceId().String()
+			}
+			fmt.Printf("Title: %s\n", note.Title)
+			fmt.Printf("ID: %s\n", currentID)
+			fmt.Printf("Last Modified: %s\n", note.GetMetadata().GetLastModifiedTime().AsTime().Format(time.RFC3339))
+			fmt.Println("-------------------")
+			fmt.Println(note.Content)
+			fmt.Println("================================================================================")
+		}
 		return nil
 	}
 
@@ -1051,6 +1096,30 @@ func listNotes(c *api.Client, notebookID string) error {
 		)
 	}
 	return w.Flush()
+}
+
+func readNote(c *api.Client, notebookID string, targetNoteID string) error {
+	notes, err := c.GetNotes(notebookID)
+	if err != nil {
+		return fmt.Errorf("read note: %w", err)
+	}
+
+	for _, note := range notes {
+		// Check both direct ID and source ID wrapper
+		currentID := note.GetSourceId().GetSourceId()
+		if currentID == "" {
+			currentID = note.GetSourceId().String()
+		}
+
+		if currentID == targetNoteID {
+			fmt.Printf("Title: %s\n", note.Title)
+			fmt.Printf("ID: %s\n", currentID)
+			fmt.Println("-------------------")
+			fmt.Println(note.Content)
+			return nil
+		}
+	}
+	return fmt.Errorf("note not found: %s", targetNoteID)
 }
 
 // Audio operations

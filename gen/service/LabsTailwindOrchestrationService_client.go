@@ -523,6 +523,11 @@ func (c *LabsTailwindOrchestrationServiceClient) GetNotes(ctx context.Context, r
 
 		// Position 1: Details array [id, content, metadata, null, title]
 		if detailsArr, ok := noteArr[1].([]interface{}); ok && len(detailsArr) >= 5 {
+			// Position 1 is the content
+			if content, ok := detailsArr[1].(string); ok {
+				note.Content = content
+			}
+
 			// Position 4 is the title
 			if title, ok := detailsArr[4].(string); ok {
 				note.Title = title
