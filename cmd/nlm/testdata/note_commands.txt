@@ -4,16 +4,32 @@
 # === NOTES COMMAND ===
 # Test notes without arguments
 ! exec ./nlm_test notes
-stderr 'usage: nlm notes <notebook-id>'
+stderr 'usage: nlm notes'
 ! stderr 'panic'
 
-# Test notes with too many arguments
-! exec ./nlm_test notes notebook123 extra
-stderr 'usage: nlm notes <notebook-id>'
+# Test notes with --full flag (should require auth, not error on args)
+! exec ./nlm_test notes notebook123 --full
+stderr 'Authentication required'
 ! stderr 'panic'
 
 # Test notes without authentication
 ! exec ./nlm_test notes notebook123
+stderr 'Authentication required'
+! stderr 'panic'
+
+# === READ-NOTE COMMAND ===
+# Test read-note without arguments
+! exec ./nlm_test read-note
+stderr 'usage: nlm read-note'
+! stderr 'panic'
+
+# Test read-note with only notebook ID
+! exec ./nlm_test read-note notebook123
+stderr 'usage: nlm read-note'
+! stderr 'panic'
+
+# Test read-note without authentication
+! exec ./nlm_test read-note notebook123 note456
 stderr 'Authentication required'
 ! stderr 'panic'
 
