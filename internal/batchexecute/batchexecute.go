@@ -18,6 +18,67 @@ import (
 // ErrUnauthorized represent an unauthorized request.
 var ErrUnauthorized = errors.New("unauthorized")
 
+// sanitizeJSON fixes invalid escape sequences in JSON strings.
+func sanitizeJSON(input string) string {
+	// Fix invalid escape sequences inside JSON strings
+	// We need to be careful to only fix escapes inside quoted strings
+	var result strings.Builder
+	inString := false
+	i := 0
+
+	for i < len(input) {
+		c := input[i]
+
+		if c == '"' && (i == 0 || input[i-1] != '\\') {
+			inString = !inString
+			result.WriteByte(c)
+			i++
+			continue
+		}
+
+		if inString && c == '\\' && i+1 < len(input) {
+			next := input[i+1]
+			// Check if this is a valid JSON escape sequence
+			switch next {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+				// Valid escape - keep as is
+				result.WriteByte(c)
+				result.WriteByte(next)
+				i += 2
+			case 'u':
+				// Unicode escape - check if followed by 4 hex digits
+				if i+5 < len(input) {
+					hex := input[i+2 : i+6]
+					valid := true
+					for _, h := range hex {
+						if !((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f') || (h >= 'A' && h <= 'F')) {
+							valid = false
+							break
+						}
+					}
+					if valid {
+						result.WriteString(input[i : i+6])
+						i += 6
+						continue
+					}
+				}
+				// Invalid unicode escape - escape the backslash
+				result.WriteString("\\\\")
+				i++
+			default:
+				// Invalid escape sequence - escape the backslash
+				result.WriteString("\\\\")
+				i++
+			}
+		} else {
+			result.WriteByte(c)
+			i++
+		}
+	}
+
+	return result.String()
+}
+
 // RPC represents a single RPC call
 type RPC struct {
 	ID        string            // RPC endpoint ID
@@ -346,6 +407,9 @@ func decodeResponse(raw string) ([]Response, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("empty response after trimming prefix")
 	}
+
+	// Sanitize JSON to fix invalid escape sequences in server responses
+	raw = sanitizeJSON(raw)
 
 	// Try to parse as a chunked response first
 	if isDigit(rune(raw[0])) {

@@ -327,8 +327,8 @@ func processChunks(chunks []string) ([]Response, error) {
 
 	// Process each chunk
 	for _, chunk := range chunks {
-		// Try to fix any common escaping issues before parsing
-		chunk = strings.ReplaceAll(chunk, "\\\"", "\"")
+		// Sanitize JSON to fix invalid escape sequences in server responses
+		chunk = sanitizeJSON(chunk)
 
 		// Remove any outer quotes if present
 		trimmed := strings.TrimSpace(chunk)

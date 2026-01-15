@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -343,29 +344,46 @@ func (c *Client) AddSourceFromText(projectID string, content, title string) (str
 }
 
 func (c *Client) AddSourceFromBase64(projectID string, content, filename, contentType string) (string, error) {
-	resp, err := c.rpc.Do(rpc.Call{
-		ID:         rpc.RPCAddSources,
+	// Decode base64 content to get raw bytes
+	rawContent, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		return "", fmt.Errorf("decode base64 content: %w", err)
+	}
+
+	// Step 1: Register the file with RPC o4cbdc to get SOURCE_ID
+	registerResp, err := c.rpc.Do(rpc.Call{
+		ID:         rpc.RPCRegisterBinarySource,
 		NotebookID: projectID,
 		Args: []interface{}{
 			[]interface{}{
-				[]interface{}{
-					content,
-					filename,
-					contentType,
-					"base64",
-				},
+				[]interface{}{filename},
 			},
 			projectID,
+			[]interface{}{2},
+			[]interface{}{1, nil, nil, nil, nil, nil, nil, nil, nil, nil, []interface{}{1}},
 		},
 	})
 	if err != nil {
-		return "", fmt.Errorf("add binary source: %w", err)
+		return "", fmt.Errorf("register binary source: %w", err)
 	}
 
-	sourceID, err := extractSourceID(resp)
+	// Extract SOURCE_ID from response
+	sourceID, err := extractSourceIDFromRegisterResponse(registerResp)
 	if err != nil {
-		return "", fmt.Errorf("extract source ID: %w", err)
+		return "", fmt.Errorf("extract source ID from register response: %w", err)
 	}
+
+	// Step 2: Initialize resumable upload
+	uploadURL, err := c.initializeResumableUpload(projectID, filename, sourceID, len(rawContent))
+	if err != nil {
+		return "", fmt.Errorf("initialize resumable upload: %w", err)
+	}
+
+	// Step 3: Upload the file content
+	if err := c.uploadFileContent(uploadURL, rawContent); err != nil {
+		return "", fmt.Errorf("upload file content: %w", err)
+	}
+
 	return sourceID, nil
 }
 
@@ -531,6 +549,114 @@ func extractSourceID(resp json.RawMessage) (string, error) {
 	}
 
 	return "", fmt.Errorf("could not find source ID in response structure: %v", data)
+}
+
+// extractSourceIDFromRegisterResponse extracts the SOURCE_ID from o4cbdc response
+func extractSourceIDFromRegisterResponse(resp json.RawMessage) (string, error) {
+	// Response format: [[[[SOURCE_ID],filename,[null,null,null,null,0]]],null,[...]]
+	var data []interface{}
+	if err := json.Unmarshal(resp, &data); err != nil {
+		return "", fmt.Errorf("parse response JSON: %w", err)
+	}
+
+	// Navigate: data[0][0][0][0] is an array containing the SOURCE_ID as first element
+	if len(data) > 0 {
+		if d0, ok := data[0].([]interface{}); ok && len(d0) > 0 {
+			if d1, ok := d0[0].([]interface{}); ok && len(d1) > 0 {
+				if d2, ok := d1[0].([]interface{}); ok && len(d2) > 0 {
+					// d2[0] is the array [SOURCE_ID]
+					if d3, ok := d2[0].([]interface{}); ok && len(d3) > 0 {
+						if id, ok := d3[0].(string); ok {
+							return id, nil
+						}
+					}
+					// Try alternative: d2[0] might be directly a string
+					if id, ok := d2[0].(string); ok {
+						return id, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("could not find source ID in register response: %v", data)
+}
+
+// initializeResumableUpload initializes the resumable upload and returns the upload URL
+func (c *Client) initializeResumableUpload(projectID, filename, sourceID string, contentLength int) (string, error) {
+	initURL := "https://notebooklm.google.com/upload/_/?authuser=0"
+
+	// Prepare payload
+	payload := fmt.Sprintf(`{"PROJECT_ID":"%s","SOURCE_NAME":"%s","SOURCE_ID":"%s"}`, projectID, filename, sourceID)
+
+	req, err := http.NewRequest("POST", initURL, strings.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("create init request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8")
+	req.Header.Set("x-goog-upload-command", "start")
+	req.Header.Set("x-goog-upload-header-content-length", strconv.Itoa(contentLength))
+	req.Header.Set("x-goog-upload-protocol", "resumable")
+	req.Header.Set("Cookie", c.rpc.Config.Cookies)
+
+	// Execute request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("execute init request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("init upload failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Extract upload URL from response header
+	uploadURL := resp.Header.Get("x-goog-upload-url")
+	if uploadURL == "" {
+		return "", fmt.Errorf("no upload URL in response headers")
+	}
+
+	return uploadURL, nil
+}
+
+// uploadFileContent uploads the file content to the resumable upload URL
+func (c *Client) uploadFileContent(uploadURL string, content []byte) error {
+	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(content))
+	if err != nil {
+		return fmt.Errorf("create upload request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=utf-8")
+	req.Header.Set("x-goog-upload-command", "upload, finalize")
+	req.Header.Set("x-goog-upload-offset", "0")
+	req.Header.Set("Content-Length", strconv.Itoa(len(content)))
+	req.Header.Set("Cookie", c.rpc.Config.Cookies)
+
+	// Execute request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("execute upload request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("upload failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Check upload status
+	uploadStatus := resp.Header.Get("x-goog-upload-status")
+	if uploadStatus != "final" {
+		return fmt.Errorf("upload not finalized, status: %s", uploadStatus)
+	}
+
+	return nil
 }
 
 // Note operations

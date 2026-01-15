@@ -1,4 +1,4 @@
-# nlm - NotebookLM CLI Tool 📚
+# nlm - NotebookLM CLI Tool 📚 
 
 `nlm` is a command-line interface for Google's NotebookLM, allowing you to manage notebooks, sources, and audio overviews from your terminal.
 

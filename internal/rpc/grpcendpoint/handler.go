@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/tmc/nlm/internal/rpc"
 )
 
 // Client handles gRPC-style endpoint requests
@@ -40,10 +42,13 @@ func (c *Client) Execute(req Request) ([]byte, error) {
 	// Build the full URL with the endpoint
 	fullURL := baseURL + req.Endpoint
 
+	// Get API parameters dynamically
+	apiParams := rpc.GetAPIParams(c.cookies)
+
 	// Add query parameters
 	params := url.Values{}
-	params.Set("bl", "boq_labs-tailwind-frontend_20250903.07_p0")
-	params.Set("f.sid", "-2216531235646590877") // This may need to be dynamic
+	params.Set("bl", apiParams.BuildVersion)
+	params.Set("f.sid", apiParams.SessionID)
 	params.Set("hl", "en")
 	params.Set("_reqid", fmt.Sprintf("%d", generateRequestID()))
 	params.Set("rt", "c")
@@ -77,9 +82,10 @@ func (c *Client) Execute(req Request) ([]byte, error) {
 	httpReq.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	if c.debug {
-		fmt.Printf("=== gRPC Request ===\n")
+		fmt.Printf("=== gRPC Endpoint Request ===\n")
 		fmt.Printf("URL: %s\n", fullURL)
-		fmt.Printf("Body: %s\n", formData.Encode())
+		fmt.Printf("f.req (raw JSON): %s\n", string(bodyJSON))
+		fmt.Printf("Body (URL-encoded): %s\n", formData.Encode())
 	}
 
 	// Send the request
@@ -105,7 +111,51 @@ func (c *Client) Execute(req Request) ([]byte, error) {
 		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	return body, nil
+	// Strip the )]}' prefix that Google adds to prevent JSON hijacking
+	bodyStr := string(body)
+	if strings.HasPrefix(bodyStr, ")]}'") {
+		bodyStr = strings.TrimPrefix(bodyStr, ")]}'")
+		bodyStr = strings.TrimLeft(bodyStr, "\n")
+	}
+
+	// Response is in chunked format: <length>\n<json>\n<length>\n<json>...
+	// Extract the first JSON chunk which contains the actual response
+	lines := strings.SplitN(bodyStr, "\n", 3)
+	if len(lines) >= 2 {
+		// First line is the length, second line is the JSON
+		bodyStr = lines[1]
+	}
+
+	// Parse the batchexecute response format: [["wrb.fr",null,"<json_data>",...]]]
+	// We need to extract the json_data (third element)
+	var outerArray [][]interface{}
+	if err := json.Unmarshal([]byte(bodyStr), &outerArray); err != nil {
+		return nil, fmt.Errorf("parse outer response: %w", err)
+	}
+
+	if len(outerArray) == 0 || len(outerArray[0]) < 3 {
+		return nil, fmt.Errorf("invalid response format: expected [['wrb.fr',null,'data',...]]")
+	}
+
+	// The third element (index 2) contains the JSON string we need
+	dataStr, ok := outerArray[0][2].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid response data type: expected string")
+	}
+
+	if c.debug {
+		fmt.Printf("=== gRPC Endpoint Response ===\n")
+		fmt.Printf("Extracted data: %s\n", dataStr[:min(300, len(dataStr))])
+	}
+
+	return []byte(dataStr), nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // StreamResponse handles streaming responses from gRPC endpoints
@@ -113,10 +163,13 @@ func (c *Client) Stream(req Request, handler func(chunk []byte) error) error {
 	baseURL := "https://notebooklm.google.com/_/LabsTailwindUi/data"
 	fullURL := baseURL + req.Endpoint
 
+	// Get API parameters dynamically
+	apiParams := rpc.GetAPIParams(c.cookies)
+
 	// Add query parameters
 	params := url.Values{}
-	params.Set("bl", "boq_labs-tailwind-frontend_20250903.07_p0")
-	params.Set("f.sid", "-2216531235646590877")
+	params.Set("bl", apiParams.BuildVersion)
+	params.Set("f.sid", apiParams.SessionID)
 	params.Set("hl", "en")
 	params.Set("_reqid", fmt.Sprintf("%d", generateRequestID()))
 	params.Set("rt", "c")
@@ -188,25 +241,30 @@ func generateRequestID() int {
 }
 
 // BuildChatRequest builds a request for the GenerateFreeFormStreamed endpoint
+// Browser format: [null,"[[[[\"source_id\"]]],\"prompt\",null,[2,null,[1]]]"]
 func BuildChatRequest(sourceIDs []string, prompt string) interface{} {
-	// Build the array of source IDs
-	sources := make([][]string, len(sourceIDs))
-	for i, id := range sourceIDs {
-		sources[i] = []string{id}
+	// Build the nested source IDs array with 3 levels of wrapping
+	// innerArray adds 1 level, so we need 3 wraps to get 4 levels total
+	// Format: [[[source_id1, source_id2, ...]]]
+	var sourceIDsInner []interface{}
+	for _, id := range sourceIDs {
+		sourceIDsInner = append(sourceIDsInner, id)
 	}
+	// 3 wraps: [[[ids]]] -> becomes [[[[ids]]]] in innerArray
+	sourceIDsNested := []interface{}{[]interface{}{sourceIDsInner}}
 
-	// Return the formatted request
-	// Format: [null, "[[sources], prompt, null, [2]]"]
+	// Build the inner array: [[[[sources]]], prompt, null, [2,null,[1]]]
 	innerArray := []interface{}{
-		sources,
+		sourceIDsNested,
 		prompt,
 		nil,
-		[]int{2},
+		[]interface{}{2, nil, []interface{}{1}},
 	}
 
 	// Marshal the inner array to JSON string
 	innerJSON, _ := json.Marshal(innerArray)
 
+	// Final format: [null, "inner_json_string"]
 	return []interface{}{
 		nil,
 		string(innerJSON),
