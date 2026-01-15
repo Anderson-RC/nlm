@@ -210,12 +210,22 @@ func (c *LabsTailwindOrchestrationServiceClient) AddSources(ctx context.Context,
 	}
 
 	// Decode the response
-	var result notebooklmv1alpha1.Project
-	if err := beprotojson.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("AddSources: unmarshal response: %w", err)
+	var rawData []interface{}
+	if err := json.Unmarshal(resp, &rawData); err != nil {
+		return nil, fmt.Errorf("AddSources: parse JSON: %w", err)
 	}
 
-	return &result, nil
+	if len(rawData) == 0 {
+		return nil, fmt.Errorf("AddSources: empty response")
+	}
+
+	// AddSources returns the project data as the first element
+	project := parseProject(rawData[0])
+	if project == nil {
+		return nil, fmt.Errorf("AddSources: failed to parse project details")
+	}
+
+	return project, nil
 }
 
 // CheckSourceFreshness calls the CheckSourceFreshness RPC method.
@@ -703,12 +713,22 @@ func (c *LabsTailwindOrchestrationServiceClient) GetProject(ctx context.Context,
 	}
 
 	// Decode the response
-	var result notebooklmv1alpha1.Project
-	if err := beprotojson.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("GetProject: unmarshal response: %w", err)
+	var rawData []interface{}
+	if err := json.Unmarshal(resp, &rawData); err != nil {
+		return nil, fmt.Errorf("GetProject: parse JSON: %w", err)
 	}
 
-	return &result, nil
+	if len(rawData) == 0 {
+		return nil, fmt.Errorf("GetProject: empty response")
+	}
+
+	// GetProject returns [project_data, ...]
+	project := parseProject(rawData[0])
+	if project == nil {
+		return nil, fmt.Errorf("GetProject: failed to parse project details")
+	}
+
+	return project, nil
 }
 
 // ListFeaturedProjects calls the ListFeaturedProjects RPC method.
@@ -748,18 +768,125 @@ func (c *LabsTailwindOrchestrationServiceClient) ListRecentlyViewedProjects(ctx 
 		return nil, fmt.Errorf("ListRecentlyViewedProjects: %w", err)
 	}
 
-	// The response is an array of projects directly, but we need to wrap it
-	// in a response message that has 'projects' as field 1
-	// Create a wrapped response: [projects_array]
-	wrappedResp := fmt.Sprintf("[%s]", string(resp))
-
-	// Decode the response
-	var result notebooklmv1alpha1.ListRecentlyViewedProjectsResponse
-	if err := beprotojson.Unmarshal([]byte(wrappedResp), &result); err != nil {
-		return nil, fmt.Errorf("ListRecentlyViewedProjects: unmarshal response: %w", err)
+	// The response is an array of projects directly
+	var projectsArray []interface{}
+	if err := json.Unmarshal(resp, &projectsArray); err != nil {
+		return nil, fmt.Errorf("ListRecentlyViewedProjects: parse JSON: %w", err)
 	}
 
-	return &result, nil
+	result := &notebooklmv1alpha1.ListRecentlyViewedProjectsResponse{}
+	for _, pData := range projectsArray {
+		project := parseProject(pData)
+		if project != nil {
+			result.Projects = append(result.Projects, project)
+		}
+	}
+
+	return result, nil
+}
+
+// parseProject parses a project array from the API response.
+func parseProject(data interface{}) *notebooklmv1alpha1.Project {
+	pArr, ok := data.([]interface{})
+	if !ok || len(pArr) < 2 {
+		return nil
+	}
+
+	project := &notebooklmv1alpha1.Project{}
+
+	// pArr[0]: ID
+	if id, ok := pArr[0].(string); ok {
+		project.ProjectId = id
+	}
+
+	// pArr[1]: Sources array
+	if sourcesArr, ok := pArr[1].([]interface{}); ok {
+		for _, sData := range sourcesArr {
+			source := parseSource(sData)
+			if source != nil {
+				project.Sources = append(project.Sources, source)
+			}
+		}
+	}
+
+	// Optional: title/emoji might be in later fields if needed
+	return project
+}
+
+// parseSource parses a source array from the API response.
+func parseSource(data interface{}) *notebooklmv1alpha1.Source {
+	sArr, ok := data.([]interface{})
+	if !ok || len(sArr) < 1 {
+		return nil
+	}
+
+	source := &notebooklmv1alpha1.Source{}
+
+	// sArr[0]: Source ID (sometimes [id])
+	if idInner, ok := sArr[0].([]interface{}); ok && len(idInner) > 0 {
+		if id, ok := idInner[0].(string); ok {
+			source.SourceId = &notebooklmv1alpha1.SourceId{SourceId: id}
+		}
+	} else if id, ok := sArr[0].(string); ok {
+		source.SourceId = &notebooklmv1alpha1.SourceId{SourceId: id}
+	}
+
+	// sArr[1]: Title
+	if title, ok := sArr[1].(string); ok {
+		source.Title = title
+	}
+
+	// sArr[2]: Detailed metadata [null, size, [created_sec, created_nanos], ..., url_list]
+	if len(sArr) > 2 {
+		if metaArr, ok := sArr[2].([]interface{}); ok {
+			source.Metadata = &notebooklmv1alpha1.SourceMetadata{}
+
+			// metaArr[2] is created_at: [seconds, nanos]
+			if len(metaArr) > 2 {
+				if tsArr, ok := metaArr[2].([]interface{}); ok && len(tsArr) >= 2 {
+					if seconds, ok := tsArr[0].(float64); ok {
+						if nanos, ok := tsArr[1].(float64); ok {
+							source.Metadata.LastModifiedTime = &timestamppb.Timestamp{
+								Seconds: int64(seconds),
+								Nanos:   int32(nanos),
+							}
+							source.Metadata.LastUpdateTimeSeconds = wrapperspb.Int32(int32(seconds))
+						}
+					}
+				}
+			}
+
+			// Check for URL at metaArr[7]
+			if len(metaArr) > 7 {
+				if urlList, ok := metaArr[7].([]interface{}); ok && len(urlList) > 0 {
+					if _, ok := urlList[0].(string); ok {
+						source.Metadata.SourceType = notebooklmv1alpha1.SourceType_SOURCE_TYPE_WEB_PAGE
+					}
+				}
+			}
+		}
+	}
+
+	// sArr[3]: Status info [[null, status_code]]
+	if len(sArr) > 3 {
+		if statusOuter, ok := sArr[3].([]interface{}); ok && len(statusOuter) > 1 {
+			if _, ok := statusOuter[1].(float64); ok {
+				// 1: processing, 2: ready, 3: error
+			}
+		}
+	}
+
+	// Basic type detection
+	if source.Metadata != nil {
+		if source.Metadata.SourceType == notebooklmv1alpha1.SourceType_SOURCE_TYPE_UNSPECIFIED {
+			// If we have a title but no metadata fields yet, guess
+			if source.Title != "" {
+				source.Metadata.SourceType = notebooklmv1alpha1.SourceType_SOURCE_TYPE_TEXT
+			}
+		}
+	}
+
+	return source
 }
 
 // MutateProject calls the MutateProject RPC method.

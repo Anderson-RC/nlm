@@ -2,21 +2,44 @@ package method
 
 import (
 	notebooklmv1alpha1 "github.com/tmc/nlm/gen/notebooklm/v1alpha1"
-	"github.com/tmc/nlm/internal/rpc/argbuilder"
 )
 
 // GENERATION_BEHAVIOR: append
 
 // EncodeAddSourcesArgs encodes arguments for LabsTailwindOrchestrationService.AddSources
 // RPC ID: izAoDd
-// Argument format: [%sources%, %project_id%]
+// Format (simplified): [%sources%, %project_id%, [2], null, null]
 func EncodeAddSourcesArgs(req *notebooklmv1alpha1.AddSourceRequest) []interface{} {
-	// Using generalized argument encoder
-	args, err := argbuilder.EncodeRPCArgs(req, "[%sources%, %project_id%]")
-	if err != nil {
-		// Log error and return empty args as fallback
-		// In production, this should be handled better
-		return []interface{}{}
+	var sources []interface{}
+
+	for _, src := range req.GetSources() {
+		if src.GetUrl() != "" {
+			// URL Source format
+			sources = append(sources, []interface{}{
+				src.GetUrl(),
+				nil,
+				[]interface{}{2},
+			})
+		} else {
+			// Text/Copy-paste source format
+			sources = append(sources, []interface{}{
+				nil,
+				[]interface{}{src.GetTitle(), src.GetContent()},
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+				nil,
+			})
+		}
 	}
-	return args
+
+	return []interface{}{
+		[]interface{}{sources},
+		req.GetProjectId(),
+		[]interface{}{2},
+		nil,
+		nil,
+	}
 }
