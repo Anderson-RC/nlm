@@ -150,8 +150,9 @@ func (c *LabsTailwindOrchestrationServiceClient) DeleteArtifact(ctx context.Cont
 func (c *LabsTailwindOrchestrationServiceClient) ListArtifacts(ctx context.Context, req *notebooklmv1alpha1.ListArtifactsRequest) (*notebooklmv1alpha1.ListArtifactsResponse, error) {
 	// Build the RPC call
 	call := rpc.Call{
-		ID:   "LfTXoe",
-		Args: method.EncodeListArtifactsArgs(req),
+		ID:         "LfTXoe",
+		Args:       method.EncodeListArtifactsArgs(req),
+		NotebookID: req.GetProjectId(),
 	}
 
 	// Execute the RPC
@@ -427,8 +428,9 @@ func (c *LabsTailwindOrchestrationServiceClient) DeleteAudioOverview(ctx context
 func (c *LabsTailwindOrchestrationServiceClient) CreateNote(ctx context.Context, req *notebooklmv1alpha1.CreateNoteRequest) (*notebooklmv1alpha1.Source, error) {
 	// Build the RPC call
 	call := rpc.Call{
-		ID:   "CYK0Xb",
-		Args: method.EncodeCreateNoteArgs(req),
+		ID:         "CYK0Xb",
+		Args:       method.EncodeCreateNoteArgs(req),
+		NotebookID: req.GetProjectId(),
 	}
 
 	// Execute the RPC
@@ -473,8 +475,9 @@ func (c *LabsTailwindOrchestrationServiceClient) DeleteNotes(ctx context.Context
 func (c *LabsTailwindOrchestrationServiceClient) GetNotes(ctx context.Context, req *notebooklmv1alpha1.GetNotesRequest) (*notebooklmv1alpha1.GetNotesResponse, error) {
 	// Build the RPC call
 	call := rpc.Call{
-		ID:   "cFji9",
-		Args: method.EncodeGetNotesArgs(req),
+		ID:         "cFji9",
+		Args:       method.EncodeGetNotesArgs(req),
+		NotebookID: req.GetProjectId(),
 	}
 
 	// Execute the RPC
@@ -594,8 +597,9 @@ func parseNoteEntry(entry interface{}) *notebooklmv1alpha1.Source {
 func (c *LabsTailwindOrchestrationServiceClient) MutateNote(ctx context.Context, req *notebooklmv1alpha1.MutateNoteRequest) (*notebooklmv1alpha1.Source, error) {
 	// Build the RPC call
 	call := rpc.Call{
-		ID:   "cYAfTb",
-		Args: method.EncodeMutateNoteArgs(req),
+		ID:         "cYAfTb",
+		Args:       method.EncodeMutateNoteArgs(req),
+		NotebookID: req.GetProjectId(),
 	}
 
 	// Execute the RPC
