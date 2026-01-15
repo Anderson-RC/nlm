@@ -528,6 +528,7 @@ func (c *LabsTailwindOrchestrationServiceClient) GetNotes(ctx context.Context, r
 	// ]
 
 	var rawData []interface{}
+
 	if err := json.Unmarshal(resp, &rawData); err != nil {
 		return nil, fmt.Errorf("GetNotes: parse JSON: %w", err)
 	}
@@ -536,14 +537,33 @@ func (c *LabsTailwindOrchestrationServiceClient) GetNotes(ctx context.Context, r
 		Notes: make([]*notebooklmv1alpha1.Source, 0),
 	}
 
-	// First element is the notes array
-	if len(rawData) == 0 {
-		return result, nil
+	// Navigate through nested arrays to find the notes array
+	// Structure: [[[ [note1, note2, ...] ]]]
+	var notesArray []interface{}
+	curr := rawData
+	for {
+		if len(curr) == 0 {
+			break
+		}
+		if next, ok := curr[0].([]interface{}); ok {
+			// If the first element is an array, go deeper
+			// But check if it's already a note entry (starts with an array of ID)
+			if len(next) > 0 {
+				if _, ok := next[0].([]interface{}); ok {
+					// This might be the notes array itself where elements are [ [id], details ]
+					// We'll check if the first element looks like a note entry
+					notesArray = next
+					break
+				}
+			}
+			curr = next
+		} else {
+			break
+		}
 	}
 
-	notesArray, ok := rawData[0].([]interface{})
-	if !ok {
-		// Try standard beprotojson unmarshal as fallback
+	if len(notesArray) == 0 {
+		// Try standard fallback
 		if err := beprotojson.Unmarshal(resp, result); err != nil {
 			return nil, fmt.Errorf("GetNotes: unmarshal response: %w", err)
 		}
@@ -768,10 +788,20 @@ func (c *LabsTailwindOrchestrationServiceClient) ListRecentlyViewedProjects(ctx 
 		return nil, fmt.Errorf("ListRecentlyViewedProjects: %w", err)
 	}
 
-	// The response is an array of projects directly
-	var projectsArray []interface{}
-	if err := json.Unmarshal(resp, &projectsArray); err != nil {
+	// The response is usually a nested array: [[p1, p2, ...]]
+	var outerArray []interface{}
+	if err := json.Unmarshal(resp, &outerArray); err != nil {
 		return nil, fmt.Errorf("ListRecentlyViewedProjects: parse JSON: %w", err)
+	}
+
+	if len(outerArray) == 0 {
+		return &notebooklmv1alpha1.ListRecentlyViewedProjectsResponse{}, nil
+	}
+
+	projectsArray, ok := outerArray[0].([]interface{})
+	if !ok {
+		// Fallback for non-nested array
+		projectsArray = outerArray
 	}
 
 	result := &notebooklmv1alpha1.ListRecentlyViewedProjectsResponse{}
@@ -788,28 +818,41 @@ func (c *LabsTailwindOrchestrationServiceClient) ListRecentlyViewedProjects(ctx 
 // parseProject parses a project array from the API response.
 func parseProject(data interface{}) *notebooklmv1alpha1.Project {
 	pArr, ok := data.([]interface{})
-	if !ok || len(pArr) < 2 {
+	if !ok || len(pArr) < 3 {
 		return nil
 	}
 
 	project := &notebooklmv1alpha1.Project{}
 
-	// pArr[0]: ID
-	if id, ok := pArr[0].(string); ok {
-		project.ProjectId = id
+	// pArr[0]: Title
+	if title, ok := pArr[0].(string); ok {
+		project.Title = title
 	}
 
 	// pArr[1]: Sources array
-	if sourcesArr, ok := pArr[1].([]interface{}); ok {
-		for _, sData := range sourcesArr {
-			source := parseSource(sData)
-			if source != nil {
-				project.Sources = append(project.Sources, source)
+	if pArr[1] != nil {
+		if sourcesArr, ok := pArr[1].([]interface{}); ok {
+			for _, sData := range sourcesArr {
+				source := parseSource(sData)
+				if source != nil {
+					project.Sources = append(project.Sources, source)
+				}
 			}
 		}
 	}
 
-	// Optional: title/emoji might be in later fields if needed
+	// pArr[2]: Project ID
+	if id, ok := pArr[2].(string); ok {
+		project.ProjectId = id
+	}
+
+	// pArr[3]: Emoji
+	if len(pArr) > 3 {
+		if emoji, ok := pArr[3].(string); ok {
+			project.Emoji = emoji
+		}
+	}
+
 	return project
 }
 
@@ -832,8 +875,10 @@ func parseSource(data interface{}) *notebooklmv1alpha1.Source {
 	}
 
 	// sArr[1]: Title
-	if title, ok := sArr[1].(string); ok {
-		source.Title = title
+	if len(sArr) > 1 {
+		if title, ok := sArr[1].(string); ok {
+			source.Title = title
+		}
 	}
 
 	// sArr[2]: Detailed metadata [null, size, [created_sec, created_nanos], ..., url_list]
