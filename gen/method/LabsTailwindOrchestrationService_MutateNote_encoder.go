@@ -2,21 +2,34 @@ package method
 
 import (
 	notebooklmv1alpha1 "github.com/tmc/nlm/gen/notebooklm/v1alpha1"
-	"github.com/tmc/nlm/internal/rpc/argbuilder"
 )
 
 // GENERATION_BEHAVIOR: append
 
 // EncodeMutateNoteArgs encodes arguments for LabsTailwindOrchestrationService.MutateNote
 // RPC ID: cYAfTb
-// Argument format: [%note_id%, %title%, %content%]
+// Updated format based on modern NotebookLM API (January 2026)
+// Format: [project_id, note_id, [[[content, title, [], 0]]]]
 func EncodeMutateNoteArgs(req *notebooklmv1alpha1.MutateNoteRequest) []interface{} {
-	// Using generalized argument encoder
-	args, err := argbuilder.EncodeRPCArgs(req, "[%note_id%, %title%, %content%]")
-	if err != nil {
-		// Log error and return empty args as fallback
-		// In production, this should be handled better
-		return []interface{}{}
+	title := ""
+	content := ""
+	if len(req.GetUpdates()) > 0 {
+		title = req.GetUpdates()[0].GetTitle()
+		content = req.GetUpdates()[0].GetContent()
 	}
-	return args
+
+	return []interface{}{
+		req.GetProjectId(),
+		req.GetNoteId(),
+		[]interface{}{
+			[]interface{}{
+				[]interface{}{
+					content,
+					title,
+					[]string{},
+					0,
+				},
+			},
+		},
+	}
 }

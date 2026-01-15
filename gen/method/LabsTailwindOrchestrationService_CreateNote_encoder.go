@@ -9,10 +9,12 @@ import (
 
 // EncodeCreateNoteArgs encodes arguments for LabsTailwindOrchestrationService.CreateNote
 // RPC ID: CYK0Xb
-// Argument format: [%project_id%, %title%, %content%]
+// Updated format based on research (January 2026)
+// Format: [project_id, content, note_type, null, title]
+// This maps directly to field numbers 1, 2, 3, (skip 4), 5.
 func EncodeCreateNoteArgs(req *notebooklmv1alpha1.CreateNoteRequest) []interface{} {
 	// Using generalized argument encoder
-	args, err := argbuilder.EncodeRPCArgs(req, "[%project_id%, %title%, %content%]")
+	args, err := argbuilder.EncodeRPCArgs(req, "[%project_id%, %content%, %note_type%, null, %title%]")
 	if err != nil {
 		// Log error and return empty args as fallback
 		// In production, this should be handled better

@@ -17,6 +17,7 @@ import (
 	"github.com/tmc/nlm/internal/rpc/grpcendpoint"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // LabsTailwindOrchestrationServiceClient is a generated client for the LabsTailwindOrchestrationService service.
@@ -440,12 +441,21 @@ func (c *LabsTailwindOrchestrationServiceClient) CreateNote(ctx context.Context,
 	}
 
 	// Decode the response
-	var result notebooklmv1alpha1.Source
-	if err := beprotojson.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("CreateNote: unmarshal response: %w", err)
+	var rawData []interface{}
+	if err := json.Unmarshal(resp, &rawData); err != nil {
+		return nil, fmt.Errorf("CreateNote: parse JSON: %w", err)
 	}
 
-	return &result, nil
+	if len(rawData) == 0 {
+		return nil, fmt.Errorf("CreateNote: empty response")
+	}
+
+	note := parseNoteDetails(rawData[0])
+	if note == nil {
+		return nil, fmt.Errorf("CreateNote: failed to parse note details")
+	}
+
+	return note, nil
 }
 
 // DeleteNotes calls the DeleteNotes RPC method.
@@ -548,19 +558,24 @@ func parseNoteEntry(entry interface{}) *notebooklmv1alpha1.Source {
 		return nil
 	}
 
+	// Position 1: Details array [id, content, metadata, null, title]
+	return parseNoteDetails(noteArr[1])
+}
+
+// parseNoteDetails parses a note details array [id, content, metadata, null, title].
+func parseNoteDetails(details interface{}) *notebooklmv1alpha1.Source {
+	detailsArr, ok := details.([]interface{})
+	if !ok || len(detailsArr) < 5 {
+		return nil
+	}
+
 	note := &notebooklmv1alpha1.Source{}
 
-	// Position 0: Source ID
-	if sourceID, ok := noteArr[0].(string); ok {
+	// details[0]: ID
+	if sourceID, ok := detailsArr[0].(string); ok {
 		note.SourceId = &notebooklmv1alpha1.SourceId{
 			SourceId: sourceID,
 		}
-	}
-
-	// Position 1: Details array [id, content, metadata, null, title]
-	detailsArr, ok := noteArr[1].([]interface{})
-	if !ok || len(detailsArr) < 5 {
-		return note
 	}
 
 	// details[1]: Content (the note body text)
@@ -585,6 +600,7 @@ func parseNoteEntry(entry interface{}) *notebooklmv1alpha1.Source {
 						Seconds: int64(seconds),
 						Nanos:   int32(nanos),
 					}
+					note.Metadata.LastUpdateTimeSeconds = wrapperspb.Int32(int32(seconds))
 				}
 			}
 		}
@@ -609,12 +625,21 @@ func (c *LabsTailwindOrchestrationServiceClient) MutateNote(ctx context.Context,
 	}
 
 	// Decode the response
-	var result notebooklmv1alpha1.Source
-	if err := beprotojson.Unmarshal(resp, &result); err != nil {
-		return nil, fmt.Errorf("MutateNote: unmarshal response: %w", err)
+	var rawData []interface{}
+	if err := json.Unmarshal(resp, &rawData); err != nil {
+		return nil, fmt.Errorf("MutateNote: parse JSON: %w", err)
 	}
 
-	return &result, nil
+	if len(rawData) == 0 {
+		return nil, fmt.Errorf("MutateNote: empty response")
+	}
+
+	note := parseNoteDetails(rawData[0])
+	if note == nil {
+		return nil, fmt.Errorf("MutateNote: failed to parse note details")
+	}
+
+	return note, nil
 }
 
 // CreateProject calls the CreateProject RPC method.

@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	// Pattern to match %field_name% placeholders
-	fieldPattern = regexp.MustCompile(`%([a-z_]+)%`)
+	// Pattern to match %field_name% placeholders exactly
+	fieldPattern = regexp.MustCompile(`^%([a-z_]+)%$`)
 )
 
 // ArgumentEncoder handles generic encoding of protobuf messages to RPC arguments
