@@ -432,7 +432,7 @@ func isValidCommand(cmd string) bool {
 		"create-artifact", "get-artifact", "list-artifacts", "artifacts", "rename-artifact", "delete-artifact",
 		"generate-guide", "generate-outline", "generate-section", "generate-magic", "generate-mindmap", "generate-chat", "chat", "chat-list",
 		"rephrase", "expand", "summarize", "critique", "brainstorm", "verify", "explain", "outline", "study-guide", "faq", "briefing-doc", "mindmap", "timeline", "toc",
-		"auth", "refresh", "hb", "share", "share-private", "share-details", "feedback",
+		"auth", "refresh", "hb", "share", "share-private", "share-details", "feedback", "mcp",
 	}
 
 	for _, valid := range validCommands {
@@ -798,6 +798,8 @@ func runCmd(client *api.Client, cmd string, args ...string) error {
 		err = actOnSources(client, args[0], "summarize", args[1:])
 	case "critique":
 		err = actOnSources(client, args[0], "critique", args[1:])
+	case "mcp":
+		err = runMCPServer(client)
 	case "brainstorm":
 		err = actOnSources(client, args[0], "brainstorm", args[1:])
 	case "verify":

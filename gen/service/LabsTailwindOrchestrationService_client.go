@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/tmc/nlm/gen/method"
 	notebooklmv1alpha1 "github.com/tmc/nlm/gen/notebooklm/v1alpha1"
@@ -1024,30 +1025,27 @@ func (c *LabsTailwindOrchestrationServiceClient) GenerateFreeFormStreamed(ctx co
 		return nil, fmt.Errorf("GenerateFreeFormStreamed: %w", err)
 	}
 
-	// Parse the response manually - format is: [["text", null, [...], ...]]
-	// The first element of the inner array is the text response
-	var outerArray []interface{}
-	if err := json.Unmarshal(resp, &outerArray); err != nil {
-		return nil, fmt.Errorf("GenerateFreeFormStreamed: parse response: %w", err)
-	}
+	// The RPC client now returns the full aggregated text directly
+	fullText := string(resp)
 
-	if len(outerArray) == 0 {
-		return nil, fmt.Errorf("GenerateFreeFormStreamed: empty response")
-	}
-
-	// Extract the text from the first element
-	innerArray, ok := outerArray[0].([]interface{})
-	if !ok || len(innerArray) == 0 {
-		return nil, fmt.Errorf("GenerateFreeFormStreamed: invalid response format")
-	}
-
-	text, ok := innerArray[0].(string)
-	if !ok {
-		return nil, fmt.Errorf("GenerateFreeFormStreamed: text not found in response")
+	// Try to parse it as JSON if it looks like a wrapped response
+	if strings.HasPrefix(fullText, "[") {
+		var outer []interface{}
+		if err := json.Unmarshal([]byte(fullText), &outer); err == nil && len(outer) > 0 {
+			// Check if first element is the text we want
+			if text, ok := outer[0].(string); ok {
+				fullText = text
+			} else if firstArr, ok := outer[0].([]interface{}); ok && len(firstArr) > 0 {
+				// Handle [[text, ...]]
+				if text, ok := firstArr[0].(string); ok {
+					fullText = text
+				}
+			}
+		}
 	}
 
 	return &notebooklmv1alpha1.GenerateFreeFormStreamedResponse{
-		Chunk:   text,
+		Chunk:   fullText,
 		IsFinal: true,
 	}, nil
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/tmc/nlm/gen/service"
 	"github.com/tmc/nlm/internal/batchexecute"
 	"github.com/tmc/nlm/internal/rpc"
+	"github.com/tmc/nlm/internal/rpc/grpcendpoint"
 )
 
 type Notebook = pb.Project
@@ -1973,45 +1974,48 @@ func (c *Client) GenerateFreeFormStreamedWithCallback(projectID string, prompt s
 		}
 	}
 
-	req := &pb.GenerateFreeFormStreamedRequest{
-		ProjectId: projectID,
-		Prompt:    prompt,
-		SourceIds: sourceIDs,
+	// Create gRPC endpoint client using the same auth credentials
+	grpcClient := grpcendpoint.NewClient(c.rpc.Config.AuthToken, c.rpc.Config.Cookies)
+
+	// Build the request body using the browser-compatible format
+	requestBody := grpcendpoint.BuildChatRequest(sourceIDs, prompt)
+
+	// Create the gRPC request
+	grpcReq := grpcendpoint.Request{
+		Endpoint: "/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed",
+		Body:     requestBody,
 	}
 
-	// For now, we'll simulate streaming by calling the regular API and breaking the response into chunks
-	// In a real implementation, this would use server-sent events or similar streaming protocol
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Use the Stream method for real-time aggregation
+	return grpcClient.Stream(grpcReq, func(rawChunk []byte) error {
+		// Strip the )]}' prefix if present in the chunk (unlikely in chunks, but safe)
+		chunkStr := string(rawChunk)
 
-	response, err := c.orchestrationService.GenerateFreeFormStreamed(ctx, req)
-	if err != nil {
-		return fmt.Errorf("generate free form streamed: %w", err)
-	}
-
-	if response != nil && response.Chunk != "" {
-		// Simulate streaming by sending words gradually
-		words := strings.Fields(response.Chunk)
-		for i, word := range words {
-			// Create a chunk with a few words at a time
-			var chunk string
-			if i == 0 {
-				chunk = word
-			} else {
-				chunk = " " + word
-			}
-
-			// Call the callback with the chunk
-			if !callback(chunk) {
-				break // Stop if callback returns false
-			}
-
-			// Add a small delay to simulate streaming
-			time.Sleep(75 * time.Millisecond)
+		// Parse the chunk manually - format is: [["text", null, [...], ...]]
+		var outerArray [][]interface{}
+		if err := json.Unmarshal([]byte(chunkStr), &outerArray); err != nil {
+			// If not a standard outer array, it might be metadata, ignore
+			return nil
 		}
-	}
 
-	return nil
+		if len(outerArray) > 0 && len(outerArray[0]) >= 3 {
+			dataStr, ok := outerArray[0][2].(string)
+			if ok {
+				// Parse the nested JSON which contains the text
+				var innerData [][]interface{}
+				if err := json.Unmarshal([]byte(dataStr), &innerData); err == nil {
+					if len(innerData) > 0 && len(innerData[0]) > 0 {
+						if text, ok := innerData[0][0].(string); ok {
+							if !callback(text) {
+								return io.EOF // Stop if callback returns false
+							}
+						}
+					}
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // GetProjectWithContext is like GetProject but accepts a context for cancellation
