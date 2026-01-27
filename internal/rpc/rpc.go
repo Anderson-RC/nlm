@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"time"
+
 	"github.com/davecgh/go-spew/spew"
 	"github.com/tmc/nlm/internal/batchexecute"
 )
@@ -76,7 +78,9 @@ func fetchAPIParamsFromPage(cookies string) *APIParams {
 	req.Header.Set("Cookie", cookies)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil

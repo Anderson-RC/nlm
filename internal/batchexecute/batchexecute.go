@@ -630,10 +630,12 @@ func NewClient(config Config, opts ...Option) *Client {
 	}
 
 	c := &Client{
-		config:     config,
-		httpClient: http.DefaultClient,
-		debug:      func(format string, args ...interface{}) {}, // noop by default
-		reqid:      NewReqIDGenerator(),
+		config: config,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		debug: func(format string, args ...interface{}) {}, // noop by default
+		reqid: NewReqIDGenerator(),
 	}
 	for _, opt := range opts {
 		opt(c)

@@ -721,6 +721,28 @@ func (c *Client) GetNotes(projectID string) ([]*Note, error) {
 	return response.Notes, nil
 }
 
+// GetNote returns a specific note by ID
+func (c *Client) GetNote(projectID, noteID string) (*pb.Source, error) {
+	notes, err := c.GetNotes(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, note := range notes {
+		// Check both direct ID and source ID wrapper
+		currentID := note.GetSourceId().GetSourceId()
+		if currentID == "" {
+			currentID = note.GetSourceId().String()
+		}
+
+		if currentID == noteID {
+			return note, nil
+		}
+	}
+
+	return nil, fmt.Errorf("note not found: %s", noteID)
+}
+
 // Audio operations
 
 func (c *Client) CreateAudioOverview(projectID string, instructions string) (*AudioOverviewResult, error) {
@@ -1932,7 +1954,7 @@ func (c *Client) GenerateFreeFormStreamed(projectID string, prompt string, sourc
 	}
 
 	// Use a timeout context for the chat request
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	response, err := c.orchestrationService.GenerateFreeFormStreamed(ctx, req)
