@@ -884,7 +884,7 @@ func list(c *api.Client) error {
 		sourceCount := len(nb.Sources)
 		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n",
 			nb.ProjectId, title, sourceCount,
-			nb.GetMetadata().GetCreateTime().AsTime().Format(time.RFC3339),
+			nb.GetMetadata().GetModifiedTime().AsTime().Format(time.RFC3339),
 		)
 	}
 	return w.Flush()

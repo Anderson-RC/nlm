@@ -170,7 +170,7 @@ func (c *Client) DeleteSources(projectID string, sourceIDs []string) error {
 		SourceIds: sourceIDs,
 	}
 	ctx := context.Background()
-	_, err := c.orchestrationService.DeleteSources(ctx, req)
+	_, err := c.orchestrationService.DeleteSources(ctx, req, projectID)
 	if err != nil {
 		return fmt.Errorf("delete sources: %w", err)
 	}
@@ -202,12 +202,12 @@ func (c *Client) RefreshSource(sourceID string) (*pb.Source, error) {
 	return source, nil
 }
 
-func (c *Client) LoadSource(sourceID string) (*pb.Source, error) {
+func (c *Client) LoadSource(sourceID string, notebookID ...string) (*pb.Source, error) {
 	req := &pb.LoadSourceRequest{
 		SourceId: sourceID,
 	}
 	ctx := context.Background()
-	source, err := c.orchestrationService.LoadSource(ctx, req)
+	source, err := c.orchestrationService.LoadSource(ctx, req, notebookID...)
 	if err != nil {
 		return nil, fmt.Errorf("load source: %w", err)
 	}
@@ -702,7 +702,7 @@ func (c *Client) DeleteNotes(projectID string, noteIDs []string) error {
 		NoteIds: noteIDs,
 	}
 	ctx := context.Background()
-	_, err := c.orchestrationService.DeleteNotes(ctx, req)
+	_, err := c.orchestrationService.DeleteNotes(ctx, req, projectID)
 	if err != nil {
 		return fmt.Errorf("delete notes: %w", err)
 	}
@@ -2148,4 +2148,467 @@ func extractYouTubeVideoID(urlStr string) (string, error) {
 	}
 
 	return "", fmt.Errorf("unsupported YouTube URL format")
+}
+
+// Research types and methods
+
+// ResearchState represents the state of a research operation
+type ResearchState string
+
+const (
+	ResearchStateInProgress ResearchState = "in_progress"
+	ResearchStateCompleted  ResearchState = "completed"
+	ResearchStateNoResearch ResearchState = "no_research"
+)
+
+// ResearchResult represents the result of a research operation
+type ResearchResult struct {
+	TaskID    string
+	ReportID  string
+	State     ResearchState
+	Query     string
+	Summary   string
+	Sources   []DiscoveredSource
+	Imported  []ImportedSource
+}
+
+// DiscoveredSource represents a source found by research
+type DiscoveredSource struct {
+	Title       string
+	URL         string
+	Description string
+}
+
+// ImportedSource represents a source that was imported into a notebook
+type ImportedSource struct {
+	ID    string
+	Title string
+}
+
+// StartFastResearch starts a quick web research session
+// Payload: [[query, source_type], null, 1, notebook_id]
+// source_type: 1=web, 2=drive
+func (c *Client) StartFastResearch(projectID, query string) (*ResearchResult, error) {
+	sourceType := 1 // web
+	resp, err := c.rpc.Do(rpc.Call{
+		ID:         rpc.RPCStartFastResearch,
+		NotebookID: projectID,
+		Args: []interface{}{
+			[]interface{}{query, sourceType},
+			nil,
+			1,
+			projectID,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start fast research: %w", err)
+	}
+
+	return c.parseStartResearchResponse(resp, projectID, query)
+}
+
+// StartDeepResearch starts a deep research session (long-running, 5-10 min)
+// Payload: [null, [1], [query, source_type], 5, notebook_id]
+func (c *Client) StartDeepResearch(projectID, query string) (*ResearchResult, error) {
+	sourceType := 1 // web (deep research only supports web)
+	resp, err := c.rpc.Do(rpc.Call{
+		ID:         rpc.RPCStartDeepResearch,
+		NotebookID: projectID,
+		Args: []interface{}{
+			nil,
+			[]interface{}{1},
+			[]interface{}{query, sourceType},
+			5,
+			projectID,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start deep research: %w", err)
+	}
+
+	return c.parseStartResearchResponse(resp, projectID, query)
+}
+
+// parseStartResearchResponse parses the response from start fast/deep research
+// Response format: [task_id, report_id, ...]
+func (c *Client) parseStartResearchResponse(resp json.RawMessage, projectID, query string) (*ResearchResult, error) {
+	var data []interface{}
+	if err := json.Unmarshal(resp, &data); err != nil {
+		return nil, fmt.Errorf("parse start research response: %w", err)
+	}
+
+	result := &ResearchResult{
+		State: ResearchStateInProgress,
+		Query: query,
+	}
+
+	if len(data) > 0 {
+		if taskID, ok := data[0].(string); ok {
+			result.TaskID = taskID
+		}
+	}
+	if len(data) > 1 {
+		if reportID, ok := data[1].(string); ok {
+			result.ReportID = reportID
+		}
+	}
+
+	if result.TaskID == "" {
+		return nil, fmt.Errorf("no task ID returned from start research (raw: %s)", string(resp))
+	}
+
+	return result, nil
+}
+
+// PollResearch checks the status of an ongoing research operation
+// Payload: [null, null, notebook_id]
+func (c *Client) PollResearch(projectID string) (*ResearchResult, error) {
+	resp, err := c.rpc.Do(rpc.Call{
+		ID:         rpc.RPCPollResearch,
+		NotebookID: projectID,
+		Args: []interface{}{
+			nil,
+			nil,
+			projectID,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("poll research: %w", err)
+	}
+
+	var data []interface{}
+	if err := json.Unmarshal(resp, &data); err != nil {
+		return nil, fmt.Errorf("parse poll research response: %w", err)
+	}
+
+	if len(data) == 0 {
+		return &ResearchResult{State: ResearchStateNoResearch}, nil
+	}
+
+	// Unwrap nested arrays if needed: [[[task_data, ...], ...]]
+	tasks := data
+	if len(tasks) > 0 {
+		if inner, ok := tasks[0].([]interface{}); ok && len(inner) > 0 {
+			if _, ok := inner[0].([]interface{}); ok {
+				tasks = inner
+			}
+		}
+	}
+
+	// Find most recent task
+	for _, taskItem := range tasks {
+		taskData, ok := taskItem.([]interface{})
+		if !ok || len(taskData) < 2 {
+			continue
+		}
+
+		taskID, ok := taskData[0].(string)
+		if !ok {
+			continue
+		}
+
+		taskInfo, ok := taskData[1].([]interface{})
+		if !ok {
+			continue
+		}
+
+		result := &ResearchResult{
+			TaskID: taskID,
+			State:  ResearchStateInProgress,
+		}
+
+		// taskInfo[1] = query info
+		if len(taskInfo) > 1 {
+			if queryInfo, ok := taskInfo[1].([]interface{}); ok && len(queryInfo) > 0 {
+				if q, ok := queryInfo[0].(string); ok {
+					result.Query = q
+				}
+			}
+		}
+
+		// taskInfo[3] = sources and summary
+		if len(taskInfo) > 3 {
+			if sourcesAndSummary, ok := taskInfo[3].([]interface{}); ok {
+				// sourcesAndSummary[0] = source list
+				if len(sourcesAndSummary) > 0 {
+					if sourcesList, ok := sourcesAndSummary[0].([]interface{}); ok {
+						for _, src := range sourcesList {
+							srcData, ok := src.([]interface{})
+							if !ok || len(srcData) < 2 {
+								continue
+							}
+							ds := DiscoveredSource{}
+							// Fast research: [url, title, ...]
+							// Deep research: [nil, title, ...]
+							if srcData[0] == nil && len(srcData) > 1 {
+								if t, ok := srcData[1].(string); ok {
+									ds.Title = t
+								}
+							} else {
+								if u, ok := srcData[0].(string); ok {
+									ds.URL = u
+								}
+								if len(srcData) > 1 {
+									if t, ok := srcData[1].(string); ok {
+										ds.Title = t
+									}
+								}
+							}
+							if len(srcData) > 2 {
+								if desc, ok := srcData[2].(string); ok {
+									ds.Description = desc
+								}
+							}
+							if ds.Title != "" || ds.URL != "" {
+								result.Sources = append(result.Sources, ds)
+							}
+						}
+					}
+				}
+				// sourcesAndSummary[1] = summary
+				if len(sourcesAndSummary) > 1 {
+					if summary, ok := sourcesAndSummary[1].(string); ok {
+						result.Summary = summary
+					}
+				}
+			}
+		}
+
+		// taskInfo[4] = status code (1=in_progress, 2=completed)
+		if len(taskInfo) > 4 {
+			if statusCode, ok := taskInfo[4].(float64); ok {
+				if int(statusCode) == 2 {
+					result.State = ResearchStateCompleted
+				}
+			}
+		}
+
+		return result, nil
+	}
+
+	return &ResearchResult{State: ResearchStateNoResearch}, nil
+}
+
+// ImportResearchSources imports selected research sources into the notebook.
+// Only sources with non-empty URLs can be imported. Deep research sources often
+// have nil URLs and cannot be imported via this method — this matches the
+// behavior of the Python reference library.
+// Payload: [null, [1], task_id, notebook_id, source_array]
+// source_array items: [null, null, [url, title], null, null, null, null, null, null, null, 2]
+func (c *Client) ImportResearchSources(projectID, taskID string, sources []DiscoveredSource) ([]ImportedSource, error) {
+	if len(sources) == 0 {
+		return nil, nil
+	}
+
+	// Filter out sources without URLs
+	var validSources []DiscoveredSource
+	for _, s := range sources {
+		if s.URL != "" {
+			validSources = append(validSources, s)
+		}
+	}
+	if len(validSources) == 0 {
+		return nil, fmt.Errorf("no sources with URLs to import")
+	}
+
+	// Build source array
+	var sourceArray []interface{}
+	for _, src := range validSources {
+		sourceArray = append(sourceArray, []interface{}{
+			nil,
+			nil,
+			[]interface{}{src.URL, src.Title},
+			nil, nil, nil, nil, nil, nil, nil,
+			2,
+		})
+	}
+
+	resp, err := c.rpc.Do(rpc.Call{
+		ID:         rpc.RPCImportResearch,
+		NotebookID: projectID,
+		Args: []interface{}{
+			nil,
+			[]interface{}{1},
+			taskID,
+			projectID,
+			sourceArray,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("import research sources: %w", err)
+	}
+
+	var data []interface{}
+	if err := json.Unmarshal(resp, &data); err != nil {
+		return nil, fmt.Errorf("parse import research response: %w", err)
+	}
+
+	// Unwrap nested arrays
+	if len(data) > 0 {
+		if inner, ok := data[0].([]interface{}); ok && len(inner) > 0 {
+			if _, ok := inner[0].([]interface{}); ok {
+				data = inner
+			}
+		}
+	}
+
+	var imported []ImportedSource
+	for _, srcData := range data {
+		if srcArr, ok := srcData.([]interface{}); ok && len(srcArr) >= 2 {
+			var srcID string
+			if idArr, ok := srcArr[0].([]interface{}); ok && len(idArr) > 0 {
+				if id, ok := idArr[0].(string); ok {
+					srcID = id
+				}
+			}
+			if srcID != "" {
+				title := ""
+				if t, ok := srcArr[1].(string); ok {
+					title = t
+				}
+				imported = append(imported, ImportedSource{ID: srcID, Title: title})
+			}
+		}
+	}
+
+	return imported, nil
+}
+
+// RunDeepResearch runs deep research and waits for completion (blocking)
+// This is a convenience method that combines StartDeepResearch, PollResearch, and ImportResearchSources.
+// Timeout is 10 minutes by default.
+func (c *Client) RunDeepResearch(ctx context.Context, projectID, query string) (*ResearchResult, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+	}
+
+	// Start
+	result, err := c.StartDeepResearch(projectID, query)
+	if err != nil {
+		return nil, fmt.Errorf("start deep research: %w", err)
+	}
+
+	if c.config.Debug {
+		fmt.Printf("Deep research started with task ID: %s\n", result.TaskID)
+	}
+
+	// Initial delay before first poll
+	select {
+	case <-ctx.Done():
+		return result, ctx.Err()
+	case <-time.After(30 * time.Second):
+	}
+
+	// Poll until completion or timeout
+	for {
+		pollResult, err := c.PollResearch(projectID)
+		if err != nil {
+			return nil, fmt.Errorf("poll research (task_id=%s): %w", result.TaskID, err)
+		}
+
+		if c.config.Debug {
+			fmt.Printf("Research status: %s (sources: %d)\n", pollResult.State, len(pollResult.Sources))
+		}
+
+		switch pollResult.State {
+		case ResearchStateCompleted:
+			return pollResult, nil
+
+		case ResearchStateNoResearch:
+			return nil, fmt.Errorf("research not found (task_id=%s)", result.TaskID)
+
+		case ResearchStateInProgress:
+			select {
+			case <-ctx.Done():
+				pollResult.TaskID = result.TaskID
+				return pollResult, ctx.Err()
+			case <-time.After(60 * time.Second):
+			}
+		}
+	}
+}
+
+// RunFastResearch runs fast web research and waits for completion (blocking).
+// If autoImport is true, discovered sources with URLs are automatically imported.
+// Default timeout is 2 minutes.
+func (c *Client) RunFastResearch(ctx context.Context, projectID, query string, autoImport bool) (*ResearchResult, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+	}
+
+	result, err := c.StartFastResearch(projectID, query)
+	if err != nil {
+		return nil, fmt.Errorf("start fast research: %w", err)
+	}
+
+	if c.config.Debug {
+		fmt.Printf("Fast research started with task ID: %s\n", result.TaskID)
+	}
+
+	// Initial delay before first poll
+	select {
+	case <-ctx.Done():
+		return result, ctx.Err()
+	case <-time.After(10 * time.Second):
+	}
+
+	// Poll until completion or timeout
+	for {
+		pollResult, err := c.PollResearch(projectID)
+		if err != nil {
+			return nil, fmt.Errorf("poll research (task_id=%s): %w", result.TaskID, err)
+		}
+
+		if c.config.Debug {
+			fmt.Printf("Research status: %s (sources: %d)\n", pollResult.State, len(pollResult.Sources))
+		}
+
+		switch pollResult.State {
+		case ResearchStateCompleted:
+			if autoImport {
+				imported, importErr := c.ImportResearchSources(projectID, pollResult.TaskID, pollResult.Sources)
+				if importErr == nil {
+					pollResult.Imported = imported
+				} else if c.config.Debug {
+					fmt.Printf("Auto-import failed: %v\n", importErr)
+				}
+			}
+			return pollResult, nil
+
+		case ResearchStateNoResearch:
+			return nil, fmt.Errorf("research not found (task_id=%s)", result.TaskID)
+
+		case ResearchStateInProgress:
+			select {
+			case <-ctx.Done():
+				pollResult.TaskID = result.TaskID
+				return pollResult, ctx.Err()
+			case <-time.After(10 * time.Second):
+			}
+		}
+	}
+}
+
+// RunDeepResearchAndImport runs deep research and attempts to import URL-bearing sources.
+// Import failure is non-fatal — research results are still returned.
+func (c *Client) RunDeepResearchAndImport(ctx context.Context, projectID, query string) (*ResearchResult, error) {
+	result, err := c.RunDeepResearch(ctx, projectID, query)
+	if err != nil {
+		return result, err
+	}
+
+	if result.State == ResearchStateCompleted && len(result.Sources) > 0 {
+		imported, importErr := c.ImportResearchSources(projectID, result.TaskID, result.Sources)
+		if importErr == nil {
+			result.Imported = imported
+		} else if c.config.Debug {
+			fmt.Printf("Auto-import after deep research failed: %v\n", importErr)
+		}
+	}
+
+	return result, nil
 }

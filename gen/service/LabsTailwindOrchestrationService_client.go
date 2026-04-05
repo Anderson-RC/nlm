@@ -200,8 +200,9 @@ func (c *LabsTailwindOrchestrationServiceClient) ActOnSources(ctx context.Contex
 func (c *LabsTailwindOrchestrationServiceClient) AddSources(ctx context.Context, req *notebooklmv1alpha1.AddSourceRequest) (*notebooklmv1alpha1.Project, error) {
 	// Build the RPC call
 	call := rpc.Call{
-		ID:   "izAoDd",
-		Args: method.EncodeAddSourcesArgs(req),
+		ID:         "izAoDd",
+		Args:       method.EncodeAddSourcesArgs(req),
+		NotebookID: req.GetProjectId(),
 	}
 
 	// Execute the RPC
@@ -253,11 +254,14 @@ func (c *LabsTailwindOrchestrationServiceClient) CheckSourceFreshness(ctx contex
 }
 
 // DeleteSources calls the DeleteSources RPC method.
-func (c *LabsTailwindOrchestrationServiceClient) DeleteSources(ctx context.Context, req *notebooklmv1alpha1.DeleteSourcesRequest) (*emptypb.Empty, error) {
+func (c *LabsTailwindOrchestrationServiceClient) DeleteSources(ctx context.Context, req *notebooklmv1alpha1.DeleteSourcesRequest, notebookID ...string) (*emptypb.Empty, error) {
 	// Build the RPC call
 	call := rpc.Call{
 		ID:   "tGMBJ",
 		Args: method.EncodeDeleteSourcesArgs(req),
+	}
+	if len(notebookID) > 0 {
+		call.NotebookID = notebookID[0]
 	}
 
 	// Execute the RPC
@@ -299,11 +303,14 @@ func (c *LabsTailwindOrchestrationServiceClient) DiscoverSources(ctx context.Con
 }
 
 // LoadSource calls the LoadSource RPC method.
-func (c *LabsTailwindOrchestrationServiceClient) LoadSource(ctx context.Context, req *notebooklmv1alpha1.LoadSourceRequest) (*notebooklmv1alpha1.Source, error) {
+func (c *LabsTailwindOrchestrationServiceClient) LoadSource(ctx context.Context, req *notebooklmv1alpha1.LoadSourceRequest, notebookID ...string) (*notebooklmv1alpha1.Source, error) {
 	// Build the RPC call
 	call := rpc.Call{
 		ID:   "hizoJc",
 		Args: method.EncodeLoadSourceArgs(req),
+	}
+	if len(notebookID) > 0 {
+		call.NotebookID = notebookID[0]
 	}
 
 	// Execute the RPC
@@ -470,11 +477,14 @@ func (c *LabsTailwindOrchestrationServiceClient) CreateNote(ctx context.Context,
 }
 
 // DeleteNotes calls the DeleteNotes RPC method.
-func (c *LabsTailwindOrchestrationServiceClient) DeleteNotes(ctx context.Context, req *notebooklmv1alpha1.DeleteNotesRequest) (*emptypb.Empty, error) {
+func (c *LabsTailwindOrchestrationServiceClient) DeleteNotes(ctx context.Context, req *notebooklmv1alpha1.DeleteNotesRequest, notebookID ...string) (*emptypb.Empty, error) {
 	// Build the RPC call
 	call := rpc.Call{
 		ID:   "AH0mwd",
 		Args: method.EncodeDeleteNotesArgs(req),
+	}
+	if len(notebookID) > 0 {
+		call.NotebookID = notebookID[0]
 	}
 
 	// Execute the RPC
@@ -851,6 +861,63 @@ func parseProject(data interface{}) *notebooklmv1alpha1.Project {
 	if len(pArr) > 3 {
 		if emoji, ok := pArr[3].(string); ok {
 			project.Emoji = emoji
+		}
+	}
+
+	// pArr[5]: ProjectMetadata array
+	// [user_role, session_active, bool, null, null, [mod_secs, mod_nanos], type, is_starred, [create_secs, create_nanos], ...]
+	if len(pArr) > 5 {
+		if metaArr, ok := pArr[5].([]interface{}); ok && len(metaArr) > 0 {
+			meta := &notebooklmv1alpha1.ProjectMetadata{}
+
+			if role, ok := metaArr[0].(float64); ok {
+				meta.UserRole = int32(role)
+			}
+			if len(metaArr) > 1 {
+				if active, ok := metaArr[1].(bool); ok {
+					meta.SessionActive = active
+				}
+			}
+			// metaArr[5] → modified_time (proto field 6)
+			if len(metaArr) > 5 {
+				if tsArr, ok := metaArr[5].([]interface{}); ok && len(tsArr) >= 2 {
+					if secs, ok := tsArr[0].(float64); ok {
+						if nanos, ok := tsArr[1].(float64); ok {
+							meta.ModifiedTime = &timestamppb.Timestamp{
+								Seconds: int64(secs),
+								Nanos:   int32(nanos),
+							}
+						}
+					}
+				}
+			}
+			// metaArr[6] → type (proto field 7)
+			if len(metaArr) > 6 {
+				if t, ok := metaArr[6].(float64); ok {
+					meta.Type = int32(t)
+				}
+			}
+			// metaArr[7] → is_starred (proto field 8)
+			if len(metaArr) > 7 {
+				if starred, ok := metaArr[7].(bool); ok {
+					meta.IsStarred = starred
+				}
+			}
+			// metaArr[8] → create_time (proto field 9)
+			if len(metaArr) > 8 {
+				if tsArr, ok := metaArr[8].([]interface{}); ok && len(tsArr) >= 2 {
+					if secs, ok := tsArr[0].(float64); ok {
+						if nanos, ok := tsArr[1].(float64); ok {
+							meta.CreateTime = &timestamppb.Timestamp{
+								Seconds: int64(secs),
+								Nanos:   int32(nanos),
+							}
+						}
+					}
+				}
+			}
+
+			project.Metadata = meta
 		}
 	}
 

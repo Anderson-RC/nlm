@@ -240,6 +240,12 @@ const (
 	// LabsTailwindOrchestrationService - Additional operations
 	RPCListFeaturedProjects = "nS9Qlc" // ListFeaturedProjects
 	RPCReportContent        = "rJKx8e" // ReportContent
+
+	// Research operations
+	RPCStartFastResearch  = "Ljjv0c" // Start fast/web research (quick source discovery)
+	RPCStartDeepResearch  = "QA9ei"  // Start deep research (long-running)
+	RPCPollResearch       = "e3bVqc" // Poll research status (both fast and deep)
+	RPCImportResearch     = "LBwxtb" // Import research results into notebook
 )
 
 // Call represents a NotebookLM RPC call
